@@ -16,6 +16,7 @@ local MAX_HISTORY = 20
 local FLAG_AFFILIATION_MINE  = 0x00000001
 local FLAG_AFFILIATION_PARTY = 0x00000002
 local FLAG_AFFILIATION_RAID  = 0x00000004
+local FLAG_TYPE_PLAYER       = 0x00000400 -- Ensures we only track REAL players dying
 local FLAG_TYPE_PET          = 0x00001000
 local FLAG_REACTION_HOSTILE  = 0x00000040
 
@@ -44,17 +45,17 @@ local function IsPet(flags)
     return bit.band(flags, FLAG_TYPE_PET) > 0 
 end
 
+local function IsPlayer(flags)
+    return bit.band(flags, FLAG_TYPE_PLAYER) > 0
+end
+
 local function IsHostile(flags) 
     return bit.band(flags, FLAG_REACTION_HOSTILE) > 0 
 end
 
--- Checks if we are actually in a Raid environment (blocks 5-man Warmane LFDs)
 local function IsValidRaidEnvironment()
     local inInstance, instanceType = IsInInstance()
-    if inInstance then
-        return instanceType == "raid"
-    end
-    -- Allow testing on open world target dummies only if actively in a raid group
+    if inInstance then return instanceType == "raid" end
     return GetNumRaidMembers() > 0
 end
 
@@ -62,7 +63,7 @@ local function Announce(msg)
     if GetNumRaidMembers() > 0 then
         SendChatMessage(msg, "RAID")
     else
-        Print(msg) -- Fallback if testing solo
+        Print(msg) 
     end
 end
 
@@ -213,10 +214,9 @@ PT:SetScript("OnEvent", function(self, event, ...)
         if loadedAddon == addonNameFromClient then
             ParryTrackerDB = ParryTrackerDB or { options = { announceDef = false, announceDeathOnly = true, trackPets = false }, bossSettings = {}, encounters = {} }
             DB = ParryTrackerDB
-            Print("v1.6 Loaded (Raid-Only Mode). Type /parry to open.")
+            Print("v1.7 Loaded (Player Deaths & Raid Only). Type /parry to open.")
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
-        -- Completely ignore combat if we are not in a raid
         if IsValidRaidEnvironment() then
             inCombat = true
             scanTimer = 1.0 
@@ -244,10 +244,14 @@ PT:SetScript("OnEvent", function(self, event, ...)
             if combatEvent == "SWING_DAMAGE" then amount = select(9, ...); AutoDetectHaste(timestamp, sourceGUID, sourceName)
             elseif combatEvent == "SPELL_DAMAGE" or combatEvent == "SPELL_PERIODIC_DAMAGE" then amount = select(12, ...) end
 
+            -- We record damage to ANY group entity so that if a player dies, the buffer has the hit
             if amount then RecordDamage(timestamp, sourceGUID, sourceName, destGUID, amount) end
         end
 
-        if combatEvent == "UNIT_DIED" and isDestGroup then CheckParryGib(timestamp, destGUID, destName) end
+        -- THE FIX: Only trigger death checks if the entity that died is an actual Player!
+        if combatEvent == "UNIT_DIED" and isDestGroup and IsPlayer(destFlags) then 
+            CheckParryGib(timestamp, destGUID, destName) 
+        end
     end
 end)
 
@@ -273,7 +277,7 @@ UI:SetBackdrop({
 
 UI.Title = UI:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 UI.Title:SetPoint("TOP", 0, -15)
-UI.Title:SetText("Parry Tracker v1.6")
+UI.Title:SetText("Parry Tracker v1.7")
 
 UI.CloseBtn = CreateFrame("Button", "PT_CloseButton", UI, "UIPanelCloseButton")
 UI.CloseBtn:SetPoint("TOPRIGHT", -5, -5)
@@ -301,7 +305,7 @@ local function CreateTab(index, text, frame)
 end
 
 -- ============================================================================
--- SCROLL LIST HELPER (With explicit Height and Background)
+-- SCROLL LIST HELPER
 -- ============================================================================
 local function CreateScrollList(frameName, parent, width, height)
     local scroll = CreateFrame("ScrollFrame", frameName, parent, "UIPanelScrollFrameTemplate")
@@ -328,7 +332,7 @@ local function CreateScrollList(frameName, parent, width, height)
 end
 
 -- ============================================================================
--- TAB 1: HISTORY (Centered List Top, Centered Details Bottom)
+-- TAB 1: HISTORY 
 -- ============================================================================
 local TabHistory = CreateFrame("Frame", "PT_TabHistory", UI.Content)
 TabHistory:SetPoint("TOPLEFT", 0, -30)
@@ -403,7 +407,7 @@ local function UpdateHistoryList()
 end
 
 -- ============================================================================
--- TAB 2: OPTIONS (Everything Centered)
+-- TAB 2: OPTIONS
 -- ============================================================================
 local TabOptions = CreateFrame("Frame", "PT_TabOptions", UI.Content)
 TabOptions:SetPoint("TOPLEFT", 0, -30)
