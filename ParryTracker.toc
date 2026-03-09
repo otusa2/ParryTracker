@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: ParryTracker
+## Notes: Parry Haste & Death Tracker for 3.3.5
+## Author: otusa
+## Version: 1.0
+## SavedVariables: ParryTrackerDB
+ParryTracker.lua
