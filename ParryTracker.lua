@@ -1,6 +1,7 @@
 -- ============================================================================
 -- PARRY TRACKER - 3.3.5a (Warmane / AzerothCore API)
 -- Boss-Only Detection, Memory-Safe Tracking, Parry Haste Gib Reports
+-- STRICTLY RAID ONLY (Ignores 5-man dungeons completely)
 -- ============================================================================
 local addonNameFromClient, addonTable = ...
 local PT = CreateFrame("Frame", "ParryTrackerFrame", UIParent)
@@ -29,16 +30,40 @@ local parryHistory = {}
 local lastSwing = {}     
 
 -- ============================================================================
--- UTILITIES
+-- UTILITIES & RAID-ONLY FILTERS
 -- ============================================================================
-local function Print(msg) DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ParryTracker]|r " .. msg) end
-local function IsInGroup(flags) return bit.band(flags, FLAG_AFFILIATION_MINE) > 0 or bit.band(flags, FLAG_AFFILIATION_PARTY) > 0 or bit.band(flags, FLAG_AFFILIATION_RAID) > 0 end
-local function IsPet(flags) return bit.band(flags, FLAG_TYPE_PET) > 0 end
-local function IsHostile(flags) return bit.band(flags, FLAG_REACTION_HOSTILE) > 0 end
+local function Print(msg) 
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ParryTracker]|r " .. msg) 
+end
+
+local function IsInGroup(flags) 
+    return bit.band(flags, FLAG_AFFILIATION_MINE) > 0 or bit.band(flags, FLAG_AFFILIATION_PARTY) > 0 or bit.band(flags, FLAG_AFFILIATION_RAID) > 0 
+end
+
+local function IsPet(flags) 
+    return bit.band(flags, FLAG_TYPE_PET) > 0 
+end
+
+local function IsHostile(flags) 
+    return bit.band(flags, FLAG_REACTION_HOSTILE) > 0 
+end
+
+-- Checks if we are actually in a Raid environment (blocks 5-man Warmane LFDs)
+local function IsValidRaidEnvironment()
+    local inInstance, instanceType = IsInInstance()
+    if inInstance then
+        return instanceType == "raid"
+    end
+    -- Allow testing on open world target dummies only if actively in a raid group
+    return GetNumRaidMembers() > 0
+end
+
 local function Announce(msg)
-    if GetNumRaidMembers() > 0 then SendChatMessage(msg, "RAID")
-    elseif GetNumPartyMembers() > 0 then SendChatMessage(msg, "PARTY")
-    else Print(msg) end
+    if GetNumRaidMembers() > 0 then
+        SendChatMessage(msg, "RAID")
+    else
+        Print(msg) -- Fallback if testing solo
+    end
 end
 
 -- ============================================================================
@@ -47,7 +72,7 @@ end
 local function StartEncounter(targetName)
     if currentEncounter then return end
     currentEncounter = { name = targetName or "Unknown Boss", startTime = time(), parries = {}, deaths = {} }
-    Print("Boss Encounter Started: " .. currentEncounter.name)
+    Print("Raid Boss Encounter Started: " .. currentEncounter.name)
 end
 
 local function EndEncounter()
@@ -149,26 +174,15 @@ local function AutoDetectHaste(timestamp, sourceGUID, sourceName)
 end
 
 -- ============================================================================
--- BOSS DETECTION SCANNER
+-- BOSS DETECTION SCANNER (Raid Only)
 -- ============================================================================
 local function GetBossName()
     if UnitExists("target") and not UnitIsFriend("player", "target") and UnitLevel("target") == -1 then return UnitName("target") end
     if UnitExists("focus") and not UnitIsFriend("player", "focus") and UnitLevel("focus") == -1 then return UnitName("focus") end
     
-    local numRaid = GetNumRaidMembers()
-    if numRaid > 0 then
-        for i = 1, numRaid do
-            local unit = "raid"..i.."target"
-            if UnitExists(unit) and not UnitIsFriend("player", unit) and UnitLevel(unit) == -1 then return UnitName(unit) end
-        end
-    else
-        local numParty = GetNumPartyMembers()
-        if numParty > 0 then
-            for i = 1, numParty do
-                local unit = "party"..i.."target"
-                if UnitExists(unit) and not UnitIsFriend("player", unit) and UnitLevel(unit) == -1 then return UnitName(unit) end
-            end
-        end
+    for i = 1, GetNumRaidMembers() do
+        local unit = "raid"..i.."target"
+        if UnitExists(unit) and not UnitIsFriend("player", unit) and UnitLevel(unit) == -1 then return UnitName(unit) end
     end
     return nil
 end
@@ -199,11 +213,14 @@ PT:SetScript("OnEvent", function(self, event, ...)
         if loadedAddon == addonNameFromClient then
             ParryTrackerDB = ParryTrackerDB or { options = { announceDef = false, announceDeathOnly = true, trackPets = false }, bossSettings = {}, encounters = {} }
             DB = ParryTrackerDB
-            Print("v1.4 Loaded. Type /parry or /pt to open.")
+            Print("v1.6 Loaded (Raid-Only Mode). Type /parry to open.")
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
-        inCombat = true
-        scanTimer = 1.0 
+        -- Completely ignore combat if we are not in a raid
+        if IsValidRaidEnvironment() then
+            inCombat = true
+            scanTimer = 1.0 
+        end
     elseif event == "PLAYER_REGEN_ENABLED" then
         inCombat = false
         EndEncounter()
@@ -256,7 +273,7 @@ UI:SetBackdrop({
 
 UI.Title = UI:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 UI.Title:SetPoint("TOP", 0, -15)
-UI.Title:SetText("Parry Tracker v1.4")
+UI.Title:SetText("Parry Tracker v1.6")
 
 UI.CloseBtn = CreateFrame("Button", "PT_CloseButton", UI, "UIPanelCloseButton")
 UI.CloseBtn:SetPoint("TOPRIGHT", -5, -5)
@@ -265,8 +282,6 @@ UI.Content = CreateFrame("Frame", "PT_ContentFrame", UI)
 UI.Content:SetPoint("TOPLEFT", 15, -40)
 UI.Content:SetPoint("BOTTOMRIGHT", -15, 15)
 
--- Centering Tabs Math: Content width is 570. Total tabs width = 100+5+100 = 205.
--- Offset to center = (570 - 205) / 2 = 182.5 (We use 182)
 UI.Tabs = {}
 local function SwitchTab(tabIndex)
     for i, tab in ipairs(UI.Tabs) do
@@ -291,9 +306,8 @@ end
 local function CreateScrollList(frameName, parent, width, height)
     local scroll = CreateFrame("ScrollFrame", frameName, parent, "UIPanelScrollFrameTemplate")
     scroll:SetWidth(width)
-    scroll:SetHeight(height) -- Crucial fix to stop floating arrows
+    scroll:SetHeight(height)
     
-    -- Background visual panel
     local bg = CreateFrame("Frame", nil, scroll)
     bg:SetPoint("TOPLEFT", -5, 5)
     bg:SetPoint("BOTTOMRIGHT", 25, -5)
@@ -320,11 +334,9 @@ local TabHistory = CreateFrame("Frame", "PT_TabHistory", UI.Content)
 TabHistory:SetPoint("TOPLEFT", 0, -30)
 TabHistory:SetPoint("BOTTOMRIGHT", 0, 0)
 
--- Centered Master List
 local listScroll, listContent = CreateScrollList("PT_HistoryScroll", TabHistory, 400, 120)
 listScroll:SetPoint("TOP", TabHistory, "TOP", -10, -10) 
 
--- Centered Details Panel below the list
 local detailsFrame = CreateFrame("Frame", "PT_DetailsFrame", TabHistory)
 detailsFrame:SetPoint("TOP", listScroll, "BOTTOM", 10, -20)
 detailsFrame:SetSize(450, 200)
@@ -368,7 +380,7 @@ local function UpdateHistoryList()
         local btn = encounterButtons[i]
         if not btn then
             btn = CreateFrame("Button", "PT_HistBtn_"..i, listContent, "OptionsListButtonTemplate")
-            btn:SetWidth(380) -- Stretches nicely across the wide centered scroll box
+            btn:SetWidth(380)
             btn:SetHeight(20)
             btn:SetPoint("TOP", listContent, "TOP", 0, -(i-1)*20)
             btn:SetNormalFontObject("GameFontNormalSmall")
@@ -400,7 +412,6 @@ TabOptions:Hide()
 
 local function CreateCheckbox(frameName, parent, label, key, yOffset)
     local cb = CreateFrame("CheckButton", frameName, parent, "UICheckButtonTemplate")
-    -- Offset X by 160 to center the checkbox+text block in the 570 width frame
     cb:SetPoint("TOPLEFT", parent, "TOPLEFT", 160, yOffset)
     _G[frameName.."Text"]:SetText(label)
     cb:SetScript("OnShow", function(self) if DB then self:SetChecked(DB.options[key]) end end)
@@ -442,7 +453,6 @@ end
 
 TabOptions:SetScript("OnShow", UpdateBossOptions)
 
--- Init Tabs
 CreateTab(1, "History", TabHistory)
 CreateTab(2, "Options", TabOptions)
 SwitchTab(1)
